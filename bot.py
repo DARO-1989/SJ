@@ -108,12 +108,12 @@ def plot_candle_chart(df, market_code):
     fig = make_subplots(
         rows=2, cols=1, 
         shared_xaxes=True, 
-        vertical_spacing=0.05, # 간격 좁힘
+        vertical_spacing=0.03, # 간격 더 좁힘
         subplot_titles=(f'{market_code}', 'RSI (14)'),
         row_width=[0.3, 0.7]
     )
 
-    # 1. 캔들스틱 (툴팁 한글화 적용)
+    # 1. 캔들스틱
     fig.add_trace(go.Candlestick(
         x=df['candle_date_time_kst'],
         open=df['opening_price'],
@@ -121,36 +121,33 @@ def plot_candle_chart(df, market_code):
         low=df['low_price'],
         close=df['trade_price'],
         name='Price',
-        increasing_line_color='red', # 한국식: 상승은 빨강
-        decreasing_line_color='blue' # 한국식: 하락은 파랑
+        increasing_line_color='#ef5350', # 더 선명한 빨강
+        decreasing_line_color='#26a69a'  # 더 선명한 초록/파랑 계열
     ), row=1, col=1)
 
     # 2. 볼린저 밴드
     fig.add_trace(go.Scatter(
         x=df['candle_date_time_kst'], y=df['Upper'],
-        line=dict(color='rgba(255, 0, 0, 0.3)', width=1, dash='dot'), # 반투명 빨강
-        name='상단 밴드',
-        hoverinfo='skip'
+        line=dict(color='rgba(255, 0, 0, 0.2)', width=1, dash='dot'),
+        name='상단 밴드', hoverinfo='skip'
     ), row=1, col=1)
     
     fig.add_trace(go.Scatter(
         x=df['candle_date_time_kst'], y=df['Lower'],
-        line=dict(color='rgba(0, 0, 255, 0.3)', width=1, dash='dot'), # 반투명 파랑
-        name='하단 밴드',
-        hoverinfo='skip'
+        line=dict(color='rgba(0, 0, 255, 0.2)', width=1, dash='dot'),
+        name='하단 밴드', hoverinfo='skip'
     ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=df['candle_date_time_kst'], y=df['MA20'],
-        line=dict(color='rgba(128, 128, 128, 0.5)', width=1), 
-        name='중심선',
-        hoverinfo='skip'
+        line=dict(color='rgba(128, 128, 128, 0.4)', width=1), 
+        name='중심선', hoverinfo='skip'
     ), row=1, col=1)
 
     # 3. RSI 차트
     fig.add_trace(go.Scatter(
         x=df['candle_date_time_kst'], y=df['RSI'],
-        line=dict(color='#9370DB', width=2), # 보라색
+        line=dict(color='#7e57c2', width=2),
         name='RSI'
     ), row=2, col=1)
 
@@ -160,20 +157,57 @@ def plot_candle_chart(df, market_code):
     fig.add_shape(type="line", x0=df['candle_date_time_kst'].iloc[0], x1=df['candle_date_time_kst'].iloc[-1],
                   y0=30, y1=30, line=dict(color="blue", width=1, dash="dash"), row=2, col=1)
 
-    # 차트 레이아웃 설정
+    # 차트 레이아웃 설정 (개선됨)
     fig.update_layout(
         height=600,
-        xaxis_rangeslider_visible=False, 
         showlegend=False,
-        margin=dict(l=10, r=10, t=30, b=10),
+        margin=dict(l=10, r=40, t=30, b=10), # 오른쪽 여백 확보 (가격축)
         paper_bgcolor='rgba(0,0,0,0)', 
         plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="gray")
+        font=dict(color="gray"),
+        # 드래그 모드 설정 (기본을 '이동'으로 할지 '줌'으로 할지)
+        dragmode='pan', 
+        xaxis=dict(
+            rangeslider=dict(visible=False), # 상단 차트 자체 슬라이더는 끔 (하단 공통 슬라이더 사용)
+            type="date"
+        )
     )
     
-    grid_color = 'rgba(128, 128, 128, 0.2)'
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=grid_color)
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor=grid_color)
+    # X축 설정 (줌 기능 개선 및 포맷)
+    fig.update_xaxes(
+        showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)',
+        tickformat="%m-%d %H:%M", # 월-일 시:분 포맷 강제 지정
+        # 하단 미니맵(Range Slider) 추가
+        rangeslider=dict(visible=True, thickness=0.05),
+        row=2, col=1 # RSI 차트 밑에 붙임
+    )
+    
+    # 상단 캔들 차트 X축은 하단과 연동되므로 포맷만 지정
+    fig.update_xaxes(
+        tickformat="%m-%d %H:%M",
+        row=1, col=1
+    )
+
+    # 시간별 줌 버튼 (Range Selector)
+    fig.update_xaxes(
+        rangeselector=dict(
+            buttons=list([
+                dict(count=1, label="1h", step="hour", stepmode="backward"),
+                dict(count=6, label="6h", step="hour", stepmode="backward"),
+                dict(count=1, label="1d", step="day", stepmode="backward"),
+                dict(step="all", label="All")
+            ]),
+            bgcolor="rgba(255,255,255,0.8)", # 버튼 배경색
+            activecolor="#ffcc00" # 선택된 버튼 색
+        ),
+        row=1, col=1
+    )
+
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)')
+    
+    # 우측 Y축 가격 표시가 잘리지 않게 설정
+    fig.update_yaxes(side="right", row=1, col=1)
+    fig.update_yaxes(side="right", row=2, col=1)
 
     return fig
 
@@ -257,7 +291,7 @@ if market_input:
             chart_df = df.tail(100)
             fig = plot_candle_chart(chart_df, market_code)
             # 로그에 뜬 경고 해결: use_container_width=True 대신 width="stretch" 사용
-            st.plotly_chart(fig, width="stretch")
+            st.plotly_chart(fig, use_container_width=True)
 
         with tab2:
             st.dataframe(df.tail(20)[['candle_date_time_kst', 'trade_price', 'RSI', 'Upper', 'Lower']].sort_index(ascending=False))
