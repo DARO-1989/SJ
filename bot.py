@@ -103,7 +103,7 @@ def get_signal_score(rsi, price, lower, upper):
     
     return action, score, emoji, desc, color
 
-# --- Plotly 차트 생성 함수 (업그레이드) ---
+# --- Plotly 차트 생성 함수 ---
 def plot_candle_chart(df, market_code):
     fig = make_subplots(
         rows=2, cols=1, 
@@ -114,7 +114,6 @@ def plot_candle_chart(df, market_code):
     )
 
     # 1. 캔들스틱 (툴팁 한글화 적용)
-    # hovertemplate을 쓰면 마우스 올렸을 때 나오는 글자를 커스텀할 수 있어.
     fig.add_trace(go.Candlestick(
         x=df['candle_date_time_kst'],
         open=df['opening_price'],
@@ -131,7 +130,7 @@ def plot_candle_chart(df, market_code):
         x=df['candle_date_time_kst'], y=df['Upper'],
         line=dict(color='rgba(255, 0, 0, 0.3)', width=1, dash='dot'), # 반투명 빨강
         name='상단 밴드',
-        hoverinfo='skip' # 밴드는 툴팁 안 뜨게 (깔끔하게)
+        hoverinfo='skip'
     ), row=1, col=1)
     
     fig.add_trace(go.Scatter(
@@ -161,19 +160,17 @@ def plot_candle_chart(df, market_code):
     fig.add_shape(type="line", x0=df['candle_date_time_kst'].iloc[0], x1=df['candle_date_time_kst'].iloc[-1],
                   y0=30, y1=30, line=dict(color="blue", width=1, dash="dash"), row=2, col=1)
 
-    # ★ 핵심 수정: 배경 투명화 + 글자색 자동 조절
+    # 차트 레이아웃 설정
     fig.update_layout(
         height=600,
         xaxis_rangeslider_visible=False, 
-        showlegend=False, # 범례가 화면 가려서 끔
+        showlegend=False,
         margin=dict(l=10, r=10, t=30, b=10),
-        # 아래 두 줄이 다크모드 호환의 핵심! (배경 투명하게)
         paper_bgcolor='rgba(0,0,0,0)', 
         plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="gray") # 글자색은 회색으로 무난하게
+        font=dict(color="gray")
     )
     
-    # 그리드 색상을 아주 연하게 설정
     grid_color = 'rgba(128, 128, 128, 0.2)'
     fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor=grid_color)
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor=grid_color)
@@ -259,7 +256,8 @@ if market_input:
         with tab1:
             chart_df = df.tail(100)
             fig = plot_candle_chart(chart_df, market_code)
-            st.plotly_chart(fig, use_container_width=True)
+            # 로그에 뜬 경고 해결: use_container_width=True 대신 width="stretch" 사용
+            st.plotly_chart(fig, width="stretch")
 
         with tab2:
             st.dataframe(df.tail(20)[['candle_date_time_kst', 'trade_price', 'RSI', 'Upper', 'Lower']].sort_index(ascending=False))
