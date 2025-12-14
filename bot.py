@@ -1,23 +1,20 @@
 import streamlit as st
 import requests
 import pandas as pd
-import time
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import time
 
-# --- 페이지 설정 ---
+# --- 페이지 설정 (모바일 최적화) ---
 st.set_page_config(
-    page_title="체이스의 코인 분석기",
-    page_icon="📈",
-    layout="centered"
+    page_title="코인 프로 차트",
+    page_icon="💎",
+    layout="wide" # 화면 넓게 쓰기
 )
 
-# --- 세션 상태 초기화 ---
-if 'market_code' not in st.session_state:
-    st.session_state['market_code'] = "KRW-BTC"
-
-# --- 데이터 조회 함수 ---
-def get_market_data(market, interval="minutes/15", count=200):
+# --- 데이터 가져오기 함수 ---
+@st.cache_data(ttl=15) # 15초 동안은 데이터를 캐시해서 속도 향상
+def get_market_data(market, interval, count=200):
     url = f"https://api.upbit.com/v1/candles/{interval}"
     params = {"market": market, "count": count}
     headers = {"accept": "application/json"}
@@ -25,280 +22,137 @@ def get_market_data(market, interval="minutes/15", count=200):
     try:
         response = requests.get(url, params=params, headers=headers)
         data = response.json()
-        if not isinstance(data, list):
-            return pd.DataFrame()
         df = pd.DataFrame(data)
+        # 날짜 변환 (중요: 이게 없으면 X축이 안 나옴)
+        df['candle_date_time_kst'] = pd.to_datetime(df['candle_date_time_kst'])
         df = df.sort_values(by="candle_date_time_kst").reset_index(drop=True)
         return df
     except Exception as e:
         return pd.DataFrame()
 
-# --- 지표 계산 함수 ---
-def calculate_indicators(df):
-    if df.empty: return df
-    
-    # RSI (14)
-    period = 14
-    delta = df['trade_price'].diff()
-    gain = (delta.where(delta > 0, 0)).fillna(0)
-    loss = (-delta.where(delta < 0, 0)).fillna(0)
-    
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    
-    rs = avg_gain / avg_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # 볼린저 밴드 (20, 2)
-    period_bb = 20
-    df['MA20'] = df['trade_price'].rolling(window=period_bb).mean()
-    df['StdDev'] = df['trade_price'].rolling(window=period_bb).std()
-    df['Upper'] = df['MA20'] + (df['StdDev'] * 2)
-    df['Lower'] = df['MA20'] - (df['StdDev'] * 2)
-    
+# --- 보조지표 계산 함수 (선택한 것만 계산) ---
+def add_indicators(df, indicators):
+    # 이동평균선 (MA)
+    if "MA(이동평균)" in indicators:
+        df['MA5'] = df['trade_price'].rolling(window=5).mean()
+        df['MA20'] = df['trade_price'].rolling(window=20).mean()
+        df['MA60'] = df['trade_price'].rolling(window=60).mean()
+
+    # 볼린저 밴드 (Bollinger Bands)
+    if "Bollinger Bands" in indicators:
+        df['MA20_BB'] = df['trade_price'].rolling(window=20).mean()
+        std = df['trade_price'].rolling(window=20).std()
+        df['Upper'] = df['MA20_BB'] + (std * 2)
+        df['Lower'] = df['MA20_BB'] - (std * 2)
+
+    # RSI (상대강도지수)
+    if "RSI" in indicators:
+        delta = df['trade_price'].diff()
+        gain = (delta.where(delta > 0, 0)).fillna(0)
+        loss = (-delta.where(delta < 0, 0)).fillna(0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+
     return df
 
-# --- 점수 계산 함수 ---
-def get_signal_score(rsi, price, lower, upper):
-    score = 0
-    action = "보류"
-    color = "gray"
-    emoji = "😐"
-    desc = "매수/매도 보류 추천드립니다."
+# --- 메인 UI ---
+st.title("📈 업비트 프로 차트")
 
-    if rsi < 30:
-        base_score = 50
-        rsi_bonus = (30 - rsi) * 2.5 
-        band_bonus = 20 if price < lower else 0
-        total_score = min(100, base_score + rsi_bonus + band_bonus)
-        
-        action = "매수"
-        color = "green"
-        if total_score >= 80:
-            emoji = "🚀"
-            desc = "강한 매수 추천 드립니다."
-        else:
-            emoji = "🛒"
-            desc = "매수 추천 드립니다."
-        score = total_score
+# 1. 설정 메뉴 (사이드바 대신 상단 확장 메뉴 사용 - 모바일 공간 확보)
+with st.expander("⚙️ 차트 설정 및 종목 선택", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        market = st.text_input("종목 코드", "KRW-BTC")
+    with col2:
+        interval_opts = {"1분": "minutes/1", "15분": "minutes/15", "1시간": "minutes/60", "4시간": "minutes/240", "1일": "days"}
+        selected_interval = st.selectbox("시간 단위", list(interval_opts.keys()), index=1)
+        interval = interval_opts[selected_interval]
 
-    elif rsi > 70:
-        base_score = 50
-        rsi_bonus = (rsi - 70) * 2.5
-        band_bonus = 20 if price > upper else 0
-        total_score = min(100, base_score + rsi_bonus + band_bonus)
-        
-        action = "매도"
-        color = "red"
-        if total_score >= 80:
-            emoji = "🔥"
-            desc = "강한 매도 추천 드립니다."
-        else:
-            emoji = "📉"
-            desc = "매도 추천 드립니다."
-        score = total_score
-        
-    else:
-        score = 0
-    
-    return action, score, emoji, desc, color
-
-# --- Plotly 차트 생성 함수 ---
-def plot_candle_chart(df, market_code):
-    fig = make_subplots(
-        rows=2, cols=1, 
-        shared_xaxes=True, 
-        vertical_spacing=0.03, # 간격 더 좁힘
-        subplot_titles=(f'{market_code}', 'RSI (14)'),
-        row_width=[0.3, 0.7]
+    # 보조지표 선택 (멀티 셀렉트)
+    indicators = st.multiselect(
+        "보조지표 선택",
+        ["MA(이동평균)", "Bollinger Bands", "RSI"],
+        default=["Bollinger Bands", "RSI"] # 기본값
     )
 
-    # 1. 캔들스틱
-    fig.add_trace(go.Candlestick(
-        x=df['candle_date_time_kst'],
-        open=df['opening_price'],
-        high=df['high_price'],
-        low=df['low_price'],
-        close=df['trade_price'],
-        name='Price',
-        increasing_line_color='#ef5350', # 더 선명한 빨강
-        decreasing_line_color='#26a69a'  # 더 선명한 초록/파랑 계열
-    ), row=1, col=1)
+    if st.button("새로고침"):
+        st.rerun()
 
-    # 2. 볼린저 밴드
-    fig.add_trace(go.Scatter(
-        x=df['candle_date_time_kst'], y=df['Upper'],
-        line=dict(color='rgba(255, 0, 0, 0.2)', width=1, dash='dot'),
-        name='상단 밴드', hoverinfo='skip'
-    ), row=1, col=1)
-    
-    fig.add_trace(go.Scatter(
-        x=df['candle_date_time_kst'], y=df['Lower'],
-        line=dict(color='rgba(0, 0, 255, 0.2)', width=1, dash='dot'),
-        name='하단 밴드', hoverinfo='skip'
-    ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=df['candle_date_time_kst'], y=df['MA20'],
-        line=dict(color='rgba(128, 128, 128, 0.4)', width=1), 
-        name='중심선', hoverinfo='skip'
-    ), row=1, col=1)
-
-    # 3. RSI 차트
-    fig.add_trace(go.Scatter(
-        x=df['candle_date_time_kst'], y=df['RSI'],
-        line=dict(color='#7e57c2', width=2),
-        name='RSI'
-    ), row=2, col=1)
-
-    # RSI 기준선
-    fig.add_shape(type="line", x0=df['candle_date_time_kst'].iloc[0], x1=df['candle_date_time_kst'].iloc[-1],
-                  y0=70, y1=70, line=dict(color="red", width=1, dash="dash"), row=2, col=1)
-    fig.add_shape(type="line", x0=df['candle_date_time_kst'].iloc[0], x1=df['candle_date_time_kst'].iloc[-1],
-                  y0=30, y1=30, line=dict(color="blue", width=1, dash="dash"), row=2, col=1)
-
-    # 차트 레이아웃 설정 (개선됨)
-    fig.update_layout(
-        height=600,
-        showlegend=False,
-        margin=dict(l=10, r=40, t=30, b=10), # 오른쪽 여백 확보 (가격축)
-        paper_bgcolor='rgba(0,0,0,0)', 
-        plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color="gray"),
-        # 드래그 모드 설정 (기본을 '이동'으로 할지 '줌'으로 할지)
-        dragmode='pan', 
-        xaxis=dict(
-            rangeslider=dict(visible=False), # 상단 차트 자체 슬라이더는 끔 (하단 공통 슬라이더 사용)
-            type="date"
-        )
-    )
-    
-    # X축 설정 (줌 기능 개선 및 포맷)
-    fig.update_xaxes(
-        showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)',
-        tickformat="%m-%d %H:%M", # 월-일 시:분 포맷 강제 지정
-        # 하단 미니맵(Range Slider) 추가
-        rangeslider=dict(visible=True, thickness=0.05),
-        row=2, col=1 # RSI 차트 밑에 붙임
-    )
-    
-    # 상단 캔들 차트 X축은 하단과 연동되므로 포맷만 지정
-    fig.update_xaxes(
-        tickformat="%m-%d %H:%M",
-        row=1, col=1
-    )
-
-    # 시간별 줌 버튼 (Range Selector)
-    fig.update_xaxes(
-        rangeselector=dict(
-            buttons=list([
-                dict(count=1, label="1h", step="hour", stepmode="backward"),
-                dict(count=6, label="6h", step="hour", stepmode="backward"),
-                dict(count=1, label="1d", step="day", stepmode="backward"),
-                dict(step="all", label="All")
-            ]),
-            bgcolor="rgba(255,255,255,0.8)", # 버튼 배경색
-            activecolor="#ffcc00" # 선택된 버튼 색
-        ),
-        row=1, col=1
-    )
-
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128, 128, 128, 0.2)')
-    
-    # 우측 Y축 가격 표시가 잘리지 않게 설정
-    fig.update_yaxes(side="right", row=1, col=1)
-    fig.update_yaxes(side="right", row=2, col=1)
-
-    return fig
-
-# --- UI 레이아웃 ---
-st.title("📈 체이스의 코인 분석기")
-
-# 상단 컨트롤 패널
-with st.container():
-    col_input, col_int, col_btn = st.columns([2, 1, 1])
-    
-    with col_input:
-        market_input = st.text_input("종목 코드", value=st.session_state['market_code'])
-        st.session_state['market_code'] = market_input.upper()
-        
-    with col_int:
-        interval_map = {"1분": "minutes/1", "15분": "minutes/15", "1시간": "minutes/60", "4시간": "minutes/240", "1일": "days"}
-        interval_label = st.selectbox("분봉", list(interval_map.keys()), index=1)
-        
-    with col_btn:
-        st.write("") 
-        st.write("") 
-        refresh = st.button("새로고침 🔄")
-
-auto_refresh = st.checkbox("10초마다 자동 갱신", value=False)
-
-# 분석 로직
-if market_input:
-    market_code = st.session_state['market_code']
-    if not market_code.startswith("KRW-") and not market_code.startswith("BTC-"):
-        market_code = f"KRW-{market_code}"
-
-    df = get_market_data(market_code, interval_map[interval_label])
-    df = calculate_indicators(df)
+# 2. 데이터 로드
+with st.spinner('차트 그리는 중...'):
+    df = get_market_data(market, interval, count=300) # 데이터를 좀 더 많이 가져옴
 
     if not df.empty:
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
+        df = add_indicators(df, indicators)
         
-        action, score, emoji, desc, color_code = get_signal_score(
-            curr['RSI'], curr['trade_price'], curr['Lower'], curr['Upper']
+        # --- 차트 그리기 (Plotly) ---
+        # RSI가 선택되었으면 그래프를 위아래 2개로 나눔, 아니면 1개
+        rows = 2 if "RSI" in indicators else 1
+        row_heights = [0.7, 0.3] if "RSI" in indicators else [1.0]
+        
+        fig = make_subplots(
+            rows=rows, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.05,
+            row_heights=row_heights
         )
 
-        st.divider()
+        # [메인 차트] 캔들스틱
+        fig.add_trace(go.Candlestick(
+            x=df['candle_date_time_kst'],
+            open=df['opening_price'], high=df['high_price'],
+            low=df['low_price'], close=df['trade_price'],
+            name='Price',
+            increasing_line_color='#FF3333', # 한국 스타일 빨강(상승)
+            decreasing_line_color='#3333FF'  # 한국 스타일 파랑(하락)
+        ), row=1, col=1)
 
-        # 메인 정보 표시
-        m_col1, m_col2 = st.columns([1, 1.2])
+        # [지표] 이동평균선
+        if "MA(이동평균)" in indicators:
+            fig.add_trace(go.Scatter(x=df['candle_date_time_kst'], y=df['MA5'], line=dict(color='orange', width=1), name='MA5'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df['candle_date_time_kst'], y=df['MA20'], line=dict(color='violet', width=1), name='MA20'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df['candle_date_time_kst'], y=df['MA60'], line=dict(color='green', width=1), name='MA60'), row=1, col=1)
 
-        with m_col1:
-            st.markdown("#### 현재 가격")
-            price_change = curr['trade_price'] - prev['trade_price']
-            price_pct = (price_change / prev['trade_price']) * 100
-            st.metric(label=market_code, value=f"{curr['trade_price']:,.0f} 원", delta=f"{price_pct:.2f}%")
+        # [지표] 볼린저 밴드
+        if "Bollinger Bands" in indicators:
+            fig.add_trace(go.Scatter(x=df['candle_date_time_kst'], y=df['Upper'], line=dict(color='gray', width=1, dash='dot'), name='BB Upper'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df['candle_date_time_kst'], y=df['Lower'], line=dict(color='gray', width=1, dash='dot'), fill='tonexty', fillcolor='rgba(200,200,200,0.1)', name='BB Lower'), row=1, col=1)
 
-        with m_col2:
-            st.markdown(f"#### {emoji} 투자 의견")
-            st.markdown(f"""
-            <div style='background-color:#f0f2f6; padding:10px; border-radius:10px;'>
-                <span style='font-size:1.2em; font-weight:bold; color:{color_code}'>{desc}</span><br>
-                <span style='color:gray; font-size:0.9em;'>RSI 지수: <b>{curr['RSI']:.1f}</b></span>
-            </div>
-            """, unsafe_allow_html=True)
+        # [서브 차트] RSI
+        if "RSI" in indicators:
+            fig.add_trace(go.Scatter(x=df['candle_date_time_kst'], y=df['RSI'], line=dict(color='purple', width=2), name='RSI'), row=2, col=1)
+            # 기준선 30, 70 추가
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="blue", row=2, col=1)
 
-        # 추천 강도
-        if action != "보류":
-            st.write("")
-            st.markdown(f"**📊 {action} 추천 강도: {score:.1f}%**")
-            st.progress(int(score))
-            if score > 80:
-                st.caption(f"💡 현재 과{action} 구간이 심화되었습니다. 적극적인 대응이 유효해 보입니다.")
-            else:
-                st.caption(f"💡 {action} 시그널이 감지되었습니다.")
-        else:
-            st.info("💡 현재는 특이 신호가 없는 '관망' 구간입니다.")
+        # --- 레이아웃 디자인 (모바일 최적화 핵심) ---
+        fig.update_layout(
+            height=600, # 차트 전체 높이
+            xaxis_rangeslider_visible=False, # 기본 레인지 슬라이더 끄고 (아래에서 커스텀 설정)
+            dragmode='pan', # 기본 동작을 '드래그 이동'으로 설정
+            margin=dict(l=10, r=10, t=30, b=20), # 여백 최소화
+            paper_bgcolor="white",
+            plot_bgcolor="white",
+            showlegend=False, # 모바일 공간 위해 범례 숨김 (필요하면 True)
+        )
 
-        st.divider()
+        # X축 설정 (여기가 스크롤바 핵심)
+        fig.update_xaxes(
+            rangeslider_visible=True, # 하단 스크롤바 켜기!
+            rangeslider_thickness=0.1, # 스크롤바 두께
+            tickformat="%H:%M", # 시간 포맷 (예: 14:30)
+            showgrid=True, gridcolor='#eee'
+        )
+        fig.update_yaxes(showgrid=True, gridcolor='#eee')
 
-        # 차트 영역
-        tab1, tab2 = st.tabs(["📊 프로 차트", "📋 데이터 상세"])
-        
-        with tab1:
-            chart_df = df.tail(100)
-            fig = plot_candle_chart(chart_df, market_code)
-            # 로그에 뜬 경고 해결: use_container_width=True 대신 width="stretch" 사용
-            st.plotly_chart(fig, use_container_width=True)
+        # 차트 출력 (use_container_width=True로 화면 꽉 차게)
+        st.plotly_chart(fig, use_container_width=True)
 
-        with tab2:
-            st.dataframe(df.tail(20)[['candle_date_time_kst', 'trade_price', 'RSI', 'Upper', 'Lower']].sort_index(ascending=False))
+        # 현재 상태 텍스트로 요약
+        curr_price = df['trade_price'].iloc[-1]
+        st.success(f"현재가: {curr_price:,.0f} KRW")
 
     else:
-        st.error("데이터를 불러올 수 없습니다. 종목 코드를 확인해주세요.")
-
-if auto_refresh:
-    time.sleep(10)
-    st.rerun()
+        st.error("데이터를 불러오지 못했습니다. 종목 코드를 확인해주세요.")
