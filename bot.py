@@ -30,7 +30,52 @@ def get_market_data(market, interval, count=200):
     except Exception as e:
         return pd.DataFrame()
 
-# --- 보조지표 계산 함수 (선택한 것만 계산) ---
+# --- 투자 의견 분석 함수 (핵심 로직 복구) ---
+def analyze_signal(df):
+    if df.empty or len(df) < 20:
+        return "데이터 부족", "gray"
+    
+    # 신호 분석을 위해 강제로 지표 계산 (차트 표시 여부와 상관없이)
+    close = df['trade_price']
+    
+    # 1. RSI (14)
+    delta = close.diff()
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    rsi_series = 100 - (100 / (1 + rs))
+    
+    # 2. 볼린저 밴드 (20, 2)
+    ma20 = close.rolling(window=20).mean()
+    std = close.rolling(window=20).std()
+    upper = ma20 + (std * 2)
+    lower = ma20 - (std * 2)
+    
+    # 현재 값 추출
+    curr_rsi = rsi_series.iloc[-1]
+    curr_price = close.iloc[-1]
+    curr_upper = upper.iloc[-1]
+    curr_lower = lower.iloc[-1]
+    
+    # 신호 판단 로직
+    if curr_rsi < 30 and curr_price < curr_lower:
+        return f"🚀 강력 매수 (과매도 + 하단 이탈)", "green"
+    elif curr_rsi < 30:
+        return f"📈 매수 권장 (RSI {curr_rsi:.1f} 과매도)", "blue"
+    elif curr_price < curr_lower:
+        return f"📈 매수 권장 (볼린저 밴드 하단 터치)", "blue"
+    elif curr_rsi > 70 and curr_price > curr_upper:
+        return f"📉 강력 매도 (과매수 + 상단 돌파)", "red"
+    elif curr_rsi > 70:
+        return f"📉 매도 권장 (RSI {curr_rsi:.1f} 과매수)", "orange"
+    elif curr_price > curr_upper:
+        return f"📉 매도 권장 (볼린저 밴드 상단 터치)", "orange"
+    else:
+        return f"😐 중립 / 관망 (특이 신호 없음)", "gray"
+
+# --- 보조지표 계산 함수 (차트용) ---
 def add_indicators(df, indicators):
     # 이동평균선 (MA)
     if "MA(이동평균)" in indicators:
@@ -60,7 +105,7 @@ def add_indicators(df, indicators):
 # --- 메인 UI ---
 st.title("📈 업비트 프로 차트")
 
-# 1. 설정 메뉴 (사이드바 대신 상단 확장 메뉴 사용 - 모바일 공간 확보)
+# 1. 설정 메뉴
 with st.expander("⚙️ 차트 설정 및 종목 선택", expanded=True):
     col1, col2 = st.columns(2)
     with col1:
@@ -70,25 +115,41 @@ with st.expander("⚙️ 차트 설정 및 종목 선택", expanded=True):
         selected_interval = st.selectbox("시간 단위", list(interval_opts.keys()), index=1)
         interval = interval_opts[selected_interval]
 
-    # 보조지표 선택 (멀티 셀렉트)
     indicators = st.multiselect(
         "보조지표 선택",
         ["MA(이동평균)", "Bollinger Bands", "RSI"],
-        default=["Bollinger Bands", "RSI"] # 기본값
+        default=["Bollinger Bands", "RSI"]
     )
 
     if st.button("새로고침"):
         st.rerun()
 
-# 2. 데이터 로드
+# 2. 데이터 로드 및 분석
 with st.spinner('차트 그리는 중...'):
-    df = get_market_data(market, interval, count=300) # 데이터를 좀 더 많이 가져옴
+    df = get_market_data(market, interval, count=300)
 
     if not df.empty:
+        # 투자 의견 분석 (차트 그리기 전에 먼저 계산해서 보여줌)
+        signal_text, signal_color = analyze_signal(df)
+        curr_price = df['trade_price'].iloc[-1]
+        
+        # 상단 정보 박스 (메트릭 + 신호)
+        m_col1, m_col2 = st.columns([1, 2])
+        with m_col1:
+            prev_price = df['trade_price'].iloc[-2]
+            change = curr_price - prev_price
+            st.metric(label="현재가", value=f"{curr_price:,.0f} KRW", delta=f"{change:,.0f} KRW")
+        with m_col2:
+            st.markdown(f"""
+            <div style='padding: 10px; border-radius: 5px; background-color: {signal_color}; color: white; text-align: center; font-weight: bold;'>
+                {signal_text}
+            </div>
+            """, unsafe_allow_html=True)
+            
+        # 차트 데이터 준비
         df = add_indicators(df, indicators)
         
         # --- 차트 그리기 (Plotly) ---
-        # RSI가 선택되었으면 그래프를 위아래 2개로 나눔, 아니면 1개
         rows = 2 if "RSI" in indicators else 1
         row_heights = [0.7, 0.3] if "RSI" in indicators else [1.0]
         
@@ -105,8 +166,8 @@ with st.spinner('차트 그리는 중...'):
             open=df['opening_price'], high=df['high_price'],
             low=df['low_price'], close=df['trade_price'],
             name='Price',
-            increasing_line_color='#FF3333', # 한국 스타일 빨강(상승)
-            decreasing_line_color='#3333FF'  # 한국 스타일 파랑(하락)
+            increasing_line_color='#FF3333',
+            decreasing_line_color='#3333FF'
         ), row=1, col=1)
 
         # [지표] 이동평균선
@@ -123,36 +184,29 @@ with st.spinner('차트 그리는 중...'):
         # [서브 차트] RSI
         if "RSI" in indicators:
             fig.add_trace(go.Scatter(x=df['candle_date_time_kst'], y=df['RSI'], line=dict(color='purple', width=2), name='RSI'), row=2, col=1)
-            # 기준선 30, 70 추가
             fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
             fig.add_hline(y=30, line_dash="dash", line_color="blue", row=2, col=1)
 
-        # --- 레이아웃 디자인 (모바일 최적화 핵심) ---
+        # --- 레이아웃 디자인 ---
         fig.update_layout(
-            height=600, # 차트 전체 높이
-            xaxis_rangeslider_visible=False, # 기본 레인지 슬라이더 끄고 (아래에서 커스텀 설정)
-            dragmode='pan', # 기본 동작을 '드래그 이동'으로 설정
-            margin=dict(l=10, r=10, t=30, b=20), # 여백 최소화
+            height=600,
+            xaxis_rangeslider_visible=False,
+            dragmode='pan',
+            margin=dict(l=10, r=10, t=30, b=20),
             paper_bgcolor="white",
             plot_bgcolor="white",
-            showlegend=False, # 모바일 공간 위해 범례 숨김 (필요하면 True)
+            showlegend=False,
         )
 
-        # X축 설정 (여기가 스크롤바 핵심)
         fig.update_xaxes(
-            rangeslider_visible=True, # 하단 스크롤바 켜기!
-            rangeslider_thickness=0.1, # 스크롤바 두께
-            tickformat="%H:%M", # 시간 포맷 (예: 14:30)
+            rangeslider_visible=True,
+            rangeslider_thickness=0.1,
+            tickformat="%H:%M",
             showgrid=True, gridcolor='#eee'
         )
         fig.update_yaxes(showgrid=True, gridcolor='#eee')
 
-        # 차트 출력 (use_container_width=True로 화면 꽉 차게)
         st.plotly_chart(fig, use_container_width=True)
-
-        # 현재 상태 텍스트로 요약
-        curr_price = df['trade_price'].iloc[-1]
-        st.success(f"현재가: {curr_price:,.0f} KRW")
 
     else:
         st.error("데이터를 불러오지 못했습니다. 종목 코드를 확인해주세요.")
