@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+bot_config.json
+bot_data/
+.streamlit/secrets.toml
+.env
